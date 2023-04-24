@@ -1,15 +1,27 @@
 #ifndef computeUtil_H
 #define computeUtil_H
-#include "device_atomic_functions.h"
-#include "device_launch_parameters.h"
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
+#include <nccl.h>
 
+#include "device_atomic_functions.h"
+#include "device_launch_parameters.h"
 
+#define dim_t unsigned long long
 #define CEIL(x, y) (((x) + (y)-1) / (y))
 
 #define MIN(a, b) ((a < b) ? a : b)
 #define MAX(a, b) ((a < b) ? b : a)
+
+#define NCCLCHECK(cmd)                                              \
+  do {                                                              \
+    ncclResult_t res = cmd;                                         \
+    if (res != ncclSuccess) {                                       \
+      printf("Failed, NCCL error %s:%d '%s'\n", __FILE__, __LINE__, \
+             ncclGetErrorString(res));                              \
+      exit(EXIT_FAILURE);                                           \
+    }                                                               \
+  } while (0)
 
 #define checkCudaError(a)                                                      \
   do {                                                                         \
