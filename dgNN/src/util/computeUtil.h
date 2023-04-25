@@ -1,5 +1,6 @@
 #ifndef computeUtil_H
 #define computeUtil_H
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
 #include <nccl.h>
@@ -31,6 +32,17 @@
               __LINE__, __FILE__, cudaGetErrorString(cudaGetLastError()));     \
       exit(EXIT_FAILURE);                                                      \
     }                                                                          \
+  } while (0)
+
+#define checkCublasError(a)                                                \
+  do {                                                                     \
+    if (CUBLAS_STATUS_SUCCESS != (a)) {                                    \
+      fprintf(stderr,                                                      \
+              "Cublas runTime error in line %d of file %s \
+    : %s \n",                                                              \
+              __LINE__, __FILE__, cudaGetErrorString(cudaGetLastError())); \
+      exit(EXIT_FAILURE);                                                  \
+    }                                                                      \
   } while (0)
 
 #define checkCuSparseError(a)                                                  \
