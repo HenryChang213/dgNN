@@ -7,3 +7,6 @@ dgNN/dgNN.egg-info/
 dgNN.egg-info/
 dist/
 *dgNN.egg-info
+*.out
+*.nsys-rep
+myprofile*

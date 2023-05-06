@@ -48,7 +48,7 @@ torch::Tensor multigpu_spmm(const long nnz,
                             in_feat);
 }
 
-torch::Tensor multigpu_gcn_inference_cuda(
+std::vector<torch::Tensor> multigpu_gcn_inference_cuda(
     const long nnz, const int num_layers, const int num_hidden,
     const int num_classes,
     const std::vector<torch::Tensor> row_ptr_s,    // int
@@ -59,7 +59,7 @@ torch::Tensor multigpu_gcn_inference_cuda(
     const std::vector<torch::Tensor> weight_s      // float
 );
 
-torch::Tensor multigpu_gcn_inference(
+std::vector<torch::Tensor> multigpu_gcn_inference_unified_memory_cuda(
     const long nnz, const int num_layers, const int num_hidden,
     const int num_classes,
     const std::vector<torch::Tensor> row_ptr_s,    // int
@@ -68,7 +68,18 @@ torch::Tensor multigpu_gcn_inference(
     const torch::Tensor p, const torch::Tensor q,  // long
     const torch::Tensor in_feat,                   // float
     const std::vector<torch::Tensor> weight_s      // float
-) {
+);
+
+std::vector<torch::Tensor> multigpu_gcn_inference(
+    const long nnz, const int num_layers, const int num_hidden,
+    const int num_classes,
+    const std::vector<torch::Tensor> row_ptr_s,    // int
+    const std::vector<torch::Tensor> col_idx_s,    // int
+    const std::vector<torch::Tensor> edge_val_s,   // float
+    const torch::Tensor p, const torch::Tensor q,  // long
+    const torch::Tensor in_feat,                   // float
+    const std::vector<torch::Tensor> weight_s,     // float
+    const int alg) {
   assert(row_ptr_s.size() == col_idx_s.size());
   assert(row_ptr_s.size() == edge_val_s.size());
   assert(row_ptr_s.size() == p.size(0) - 1);
@@ -98,9 +109,18 @@ torch::Tensor multigpu_gcn_inference(
     assert(weight_s[i].is_contiguous());
     assert(weight_s[i].dtype() == torch::kFloat32);
   }
-  return multigpu_gcn_inference_cuda(nnz, num_layers, num_hidden, num_classes,
-                                     row_ptr_s, col_idx_s, edge_val_s, p, q,
-                                     in_feat, weight_s);
+  switch (alg) {
+    case 0:
+      return multigpu_gcn_inference_cuda(nnz, num_layers, num_hidden,
+                                         num_classes, row_ptr_s, col_idx_s,
+                                         edge_val_s, p, q, in_feat, weight_s);
+    case 1:
+      return multigpu_gcn_inference_unified_memory_cuda(
+          nnz, num_layers, num_hidden, num_classes, row_ptr_s, col_idx_s,
+          edge_val_s, p, q, in_feat, weight_s);
+    default:
+      throw std::runtime_error("unknown alg");
+  }
 }
 PYBIND11_MODULE(multigpu_gcnconv, m) {
   m.doc() = "multi-gpu gcnconv kernel. ";

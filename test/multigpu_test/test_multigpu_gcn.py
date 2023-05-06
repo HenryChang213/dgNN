@@ -17,12 +17,12 @@ col, row = g.edges(order="srcdst")
 edge_val = torch.randn(col.shape, dtype=torch.float32)
 p = torch.tensor([0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64)
 q = torch.tensor([0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64)
-num_layers = 2
-num_hidden = 16
+num_layers = 4
+num_hidden = 128
 num_classes = data.num_classes
 in_feat = g.ndata["feat"]
 f = in_feat.shape[1]
-in_feat = torch.randn(m, f, dtype=torch.float32)
+# in_feat = torch.randn(m, f, dtype=torch.float32)
 print(
     "num_layers",
     num_layers,
@@ -82,7 +82,7 @@ for i in range(4):
         edge_val_s.append(edge_val_split)
 
 start = time.time()
-out_feat_our = multigpu_gcnconv.multigpu_gcn_inference(
+out_feat_our,inference_time = multigpu_gcnconv.multigpu_gcn_inference(
     nnz,
     num_layers,
     num_hidden,
@@ -94,9 +94,11 @@ out_feat_our = multigpu_gcnconv.multigpu_gcn_inference(
     q,
     in_feat,
     weight_s,
+    1
 )
 torch.cuda.synchronize()
 end = time.time()
+print(inference_time)
 print("gcnconv time", end - start)
 
 print(out_feat_our[0])
@@ -111,7 +113,7 @@ print(x, y)
 print(out_feat_our[x])
 print(out_feat_gt[x])
 max_diff = torch.max(torch.abs(out_feat_our - out_feat_gt))
-print(max_diff)
-print(torch.min(torch.abs(out_feat_our - out_feat_gt)))
-print(torch.mean(torch.abs(out_feat_our - out_feat_gt)))
+# print(max_diff)
+# print(torch.min(torch.abs(out_feat_our - out_feat_gt)))
+# print(torch.mean(torch.abs(out_feat_our - out_feat_gt)))
 print(max_diff / torch.mean(out_feat_gt))

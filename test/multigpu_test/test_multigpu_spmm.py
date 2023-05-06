@@ -1,5 +1,5 @@
 import torch
-import spmm_multigpu
+import multigpu_gcnconv
 import time
 
 
@@ -53,7 +53,7 @@ for i in range(4):
         edge_val_s.append(edge_val_split)
 
 start=time.time()
-out_feat_our = spmm_multigpu.multigpu_spmm(
+out_feat_our = multigpu_gcnconv.multigpu_spmm(
     nnz, row_ptr_s, col_idx_s, edge_val_s, p, q, in_feat
 )
 torch.cuda.synchronize()
