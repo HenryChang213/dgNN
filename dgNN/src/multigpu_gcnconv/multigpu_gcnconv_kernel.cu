@@ -644,8 +644,8 @@ std::vector<torch::Tensor> multigpu_gcn_inference_cuda(
     cudaEventSynchronize(stop);
     float elapsedTime;
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    std::cout << "Elapsed time on GPU "
-              << ": " << elapsedTime << " ms" << std::endl;
+    // std::cout << "Elapsed time on GPU "
+    //           << ": " << elapsedTime << " ms" << std::endl;
     if (epoch >= 10) inference_time[epoch - 10] = elapsedTime;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
@@ -1041,8 +1041,8 @@ std::vector<torch::Tensor> multigpu_gcn_inference_unified_memory_cuda(
     cudaEventSynchronize(stop);
     float elapsedTime;
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    std::cout << "Elapsed time on GPU "
-              << ": " << elapsedTime << " ms" << std::endl;
+    // std::cout << "Elapsed time on GPU "
+    //           << ": " << elapsedTime << " ms" << std::endl;
     if (epoch >= 10) inference_time[epoch - 10] = elapsedTime;
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
@@ -1076,6 +1076,278 @@ std::vector<torch::Tensor> multigpu_gcn_inference_unified_memory_cuda(
     checkCudaError(cudaFreeAsync(d_weight_s[deviceId], stream_s[deviceId]));
   }
   for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    for (int stage = 0; stage < deviceCount; stage++) {
+      int index = deviceId * deviceCount + stage;
+      checkCudaError(cudaFree(um_row_ptr_s[index]));
+      checkCudaError(cudaFree(um_col_idx_s[index]));
+      checkCudaError(cudaFree(um_edge_val_s[index]));
+    }
+  }
+
+  for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
+    ncclCommDestroy(comms[deviceId]);
+    cublasDestroy(cublas_handle_s[deviceId]);
+  }
+
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    checkCudaError(cudaStreamSynchronize(stream_s[deviceId]));
+  }
+
+  return {out_feat, inference_time};
+}
+
+std::vector<torch::Tensor>
+multigpu_gcn_inference_unified_memory_sparseOnGPU_cuda(
+    const long nnz, const int num_layers, const int num_hidden,
+    const int num_classes,
+    const std::vector<torch::Tensor> row_ptr_s,    // int
+    const std::vector<torch::Tensor> col_idx_s,    // int
+    const std::vector<torch::Tensor> edge_val_s,   // float
+    const torch::Tensor p, const torch::Tensor q,  // long
+    const torch::Tensor in_feat,                   // float
+    const std::vector<torch::Tensor> weight_s      // float
+) {
+  /*****************/
+  /* initialization*/
+  /*****************/
+  int deviceCount;
+  cudaGetDeviceCount(&deviceCount);
+  assert(deviceCount * deviceCount == row_ptr_s.size());
+  assert(deviceCount * deviceCount == col_idx_s.size());
+  assert(deviceCount * deviceCount == edge_val_s.size());
+  assert(deviceCount + 1 == p.size(0));
+  assert(deviceCount + 1 == q.size(0));
+  assert(weight_s.size() == num_layers);
+  assert(weight_s[0].size(0) == in_feat.size(1));
+  assert(weight_s[0].size(1) == num_hidden);
+  for (int i = 1; i < num_layers - 1; i++) {
+    assert(weight_s[i].size(0) == num_hidden);
+    assert(weight_s[i].size(1) == num_hidden);
+  }
+  assert(weight_s[num_layers - 1].size(0) == num_hidden);
+  assert(weight_s[num_layers - 1].size(1) == num_classes);
+  const int m = in_feat.size(0);
+  const int f = in_feat.size(1);
+  int max_f = MAX(f, num_hidden);
+  max_f = MAX(max_f, num_classes);
+
+  auto options =
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
+  auto out_feat = torch::empty({m, num_classes}, options);
+  auto inference_time = torch::empty({10}, options);
+
+  // initialize
+  ncclComm_t comms[4];
+  int devs[4] = {0, 1, 2, 3};
+  NCCLCHECK(ncclCommInitAll(comms, deviceCount, devs));
+
+  cublasHandle_t cublas_handle_s[4];
+  for (int i = 0; i < deviceCount; i++) {
+    checkCudaError(cudaSetDevice(i));
+    checkCublasError(cublasCreate(&cublas_handle_s[i]));
+  }
+
+  // allocating GPU memory
+  std::vector<float*> in_feat_s(deviceCount);
+  std::vector<float*> out_feat_s(deviceCount);
+  std::vector<float*> recv_buffer_s(deviceCount);
+  std::vector<cudaStream_t> stream_s(deviceCount);
+  std::vector<long> A_row_s(deviceCount);
+  std::vector<long> A_col_s(deviceCount);
+  std::vector<int*> um_row_ptr_s(deviceCount * deviceCount);
+  std::vector<int*> um_col_idx_s(deviceCount * deviceCount);
+  std::vector<float*> um_edge_val_s(deviceCount * deviceCount);
+  std::vector<long> max_edge_num_s(deviceCount);
+  std::vector<float*> d_weight_s(deviceCount);
+
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    checkCudaError(cudaStreamCreate(&stream_s[deviceId]));
+  }
+
+  long max_col_num = 0;
+  long max_row_num = 0;
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+
+    long row_begin = p[deviceId].item<long>();
+    long row_end = p[deviceId + 1].item<long>();
+    long row_num = row_end - row_begin;
+    A_row_s[deviceId] = row_num;
+    max_row_num = MAX(max_row_num, row_num);
+
+    long col_begin = q[deviceId].item<long>();
+    long col_end = q[deviceId + 1].item<long>();
+    long col_num = col_end - col_begin;
+    A_col_s[deviceId] = col_num;
+    max_col_num = MAX(max_col_num, col_num);
+
+    long max_edge_num = 0;
+
+    for (int i = 0; i < deviceCount; i++) {
+      max_edge_num =
+          MAX(max_edge_num,
+              row_ptr_s[deviceId * deviceCount + i][row_num].item<long>());
+    }
+    max_edge_num_s[deviceId] = max_edge_num;
+  }
+  long max_row_col_num = MAX(max_row_num, max_col_num);
+
+  long max_feat_size = max_row_col_num * max_f * sizeof(float);
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    long row_num = A_row_s[deviceId];
+    long col_num = A_col_s[deviceId];
+    checkCudaError(
+        cudaMallocManaged((void**)&in_feat_s[deviceId], max_feat_size));
+    checkCudaError(cudaMalloc((void**)&out_feat_s[deviceId], max_feat_size));
+    checkCudaError(cudaMalloc((void**)&recv_buffer_s[deviceId], max_feat_size));
+    // checkCudaError(cudaMallocAsync(&d_row_ptr_s[deviceId],
+    //                                (row_num + 1) * sizeof(int),
+    //                                stream_s[deviceId]));
+    // checkCudaError(cudaMallocAsync(&d_col_idx_s[deviceId],
+    //                                max_edge_num_s[deviceId] * sizeof(int),
+    //                                stream_s[deviceId]));
+    // checkCudaError(cudaMallocAsync(&d_edge_val_s[deviceId],
+    //                                max_edge_num_s[deviceId] * sizeof(float),
+    //                                stream_s[deviceId]));
+    checkCudaError(cudaMallocAsync(&d_weight_s[deviceId],
+                                   max_f * max_f * sizeof(float),
+                                   stream_s[deviceId]));
+    checkCudaError(cudaMemcpyAsync(
+        in_feat_s[deviceId],
+        in_feat.data_ptr<float>() + q[deviceId].item<long>() * f,
+        col_num * f * sizeof(float), cudaMemcpyHostToDevice,
+        stream_s[deviceId]));
+  }
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    long row_num = A_row_s[deviceId];
+    for (int stage = 0; stage < deviceCount; stage++) {
+      int index = deviceId * deviceCount + stage;
+      long edge_num = row_ptr_s[index][row_num].item<long>();
+      checkCudaError(cudaMallocAsync(&um_row_ptr_s[index],
+                                     (row_num + 1) * sizeof(int),
+                                     stream_s[deviceId]));
+      checkCudaError(cudaMallocAsync(
+          &um_col_idx_s[index], edge_num * sizeof(int), stream_s[deviceId]));
+      checkCudaError(cudaMallocAsync(
+          &um_edge_val_s[index], edge_num * sizeof(float), stream_s[deviceId]));
+      auto& h_row_ptr = row_ptr_s[index];
+      auto& h_col_idx = col_idx_s[index];
+      auto& h_edge_val = edge_val_s[index];
+      checkCudaError(
+          cudaMemcpyAsync(um_row_ptr_s[index], h_row_ptr.data_ptr<int>(),
+                          h_row_ptr.size(0) * sizeof(int),
+                          cudaMemcpyHostToDevice, stream_s[deviceId]));
+      checkCudaError(
+          cudaMemcpyAsync(um_col_idx_s[index], h_col_idx.data_ptr<int>(),
+                          h_col_idx.size(0) * sizeof(int),
+                          cudaMemcpyHostToDevice, stream_s[deviceId]));
+      checkCudaError(
+          cudaMemcpyAsync(um_edge_val_s[index], h_edge_val.data_ptr<float>(),
+                          h_edge_val.size(0) * sizeof(float),
+                          cudaMemcpyHostToDevice, stream_s[deviceId]));
+    }
+  }
+
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    checkCudaError(cudaStreamSynchronize(stream_s[deviceId]));
+    checkCudaError(cudaDeviceSynchronize());
+  }
+
+  for (int epoch = 0; epoch < 20; epoch++) {
+    // copy in_feat to GPU
+    for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+      checkCudaError(cudaSetDevice(deviceId));
+      long col_num = A_col_s[deviceId];
+      checkCudaError(cudaMemcpyAsync(
+          in_feat_s[deviceId],
+          in_feat.data_ptr<float>() + q[deviceId].item<long>() * f,
+          col_num * f * sizeof(float), cudaMemcpyHostToDevice,
+          stream_s[deviceId]));
+    }
+    for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+      checkCudaError(cudaSetDevice(deviceId));
+      checkCudaError(cudaStreamSynchronize(stream_s[deviceId]));
+    }
+    startProfile();
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+
+    // first layer
+    multigpu_gcnconv_inference_unified_memory_cuda(
+        deviceCount, comms, devs, cublas_handle_s, stream_s, in_feat_s,
+        out_feat_s, recv_buffer_s, um_row_ptr_s, um_col_idx_s, um_edge_val_s,
+        d_weight_s, A_row_s, A_col_s, max_edge_num_s, row_ptr_s, col_idx_s,
+        edge_val_s, weight_s[0].data_ptr<float>(), weight_s[0].size(0),
+        weight_s[0].size(1));
+    // result in out_feat_s
+
+    // hidden layers
+    for (int i = 1; i < num_layers - 1; i++) {
+      std::swap(in_feat_s, out_feat_s);
+      multigpu_gcnconv_inference_unified_memory_cuda(
+          deviceCount, comms, devs, cublas_handle_s, stream_s, in_feat_s,
+          out_feat_s, recv_buffer_s, um_row_ptr_s, um_col_idx_s, um_edge_val_s,
+          d_weight_s, A_row_s, A_col_s, max_edge_num_s, row_ptr_s, col_idx_s,
+          edge_val_s, weight_s[i].data_ptr<float>(), weight_s[i].size(0),
+          weight_s[i].size(1));
+    }
+
+    // last layer
+    std::swap(in_feat_s, out_feat_s);
+    multigpu_gcnconv_inference_unified_memory_cuda(
+        deviceCount, comms, devs, cublas_handle_s, stream_s, in_feat_s,
+        out_feat_s, recv_buffer_s, um_row_ptr_s, um_col_idx_s, um_edge_val_s,
+        d_weight_s, A_row_s, A_col_s, max_edge_num_s, row_ptr_s, col_idx_s,
+        edge_val_s, weight_s[num_layers - 1].data_ptr<float>(),
+        weight_s[num_layers - 1].size(0), weight_s[num_layers - 1].size(1));
+
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    // std::cout << "Elapsed time on GPU "
+    //           << ": " << elapsedTime << " ms" << std::endl;
+    if (epoch >= 10) inference_time[epoch - 10] = elapsedTime;
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    fflush(stdout);
+    endProfile();
+  }
+
+  // copy back
+  if (MULTIGPU_SPMM_DEBUG) {
+    std::cout << "start copy back\n";
+    fflush(stdout);
+  }
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    checkCudaError(cudaMemcpyAsync(
+        out_feat.data_ptr<float>() + p[deviceId].item<long>() * num_classes,
+        out_feat_s[deviceId], A_row_s[deviceId] * num_classes * sizeof(float),
+        cudaMemcpyDeviceToHost, stream_s[deviceId]));
+  }
+
+  // free
+  if (MULTIGPU_SPMM_DEBUG) {
+    std::cout << "start free\n";
+    fflush(stdout);
+  }
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
+    checkCudaError(cudaFree(in_feat_s[deviceId]));
+    checkCudaError(cudaFree(out_feat_s[deviceId]));
+    checkCudaError(cudaFree(recv_buffer_s[deviceId]));
+    checkCudaError(cudaFree(d_weight_s[deviceId]));
+  }
+  for (int deviceId = 0; deviceId < deviceCount; deviceId++) {
+    checkCudaError(cudaSetDevice(deviceId));
     for (int stage = 0; stage < deviceCount; stage++) {
       int index = deviceId * deviceCount + stage;
       checkCudaError(cudaFree(um_row_ptr_s[index]));

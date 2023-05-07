@@ -70,6 +70,18 @@ std::vector<torch::Tensor> multigpu_gcn_inference_unified_memory_cuda(
     const std::vector<torch::Tensor> weight_s      // float
 );
 
+std::vector<torch::Tensor>
+multigpu_gcn_inference_unified_memory_sparseOnGPU_cuda(
+    const long nnz, const int num_layers, const int num_hidden,
+    const int num_classes,
+    const std::vector<torch::Tensor> row_ptr_s,    // int
+    const std::vector<torch::Tensor> col_idx_s,    // int
+    const std::vector<torch::Tensor> edge_val_s,   // float
+    const torch::Tensor p, const torch::Tensor q,  // long
+    const torch::Tensor in_feat,                   // float
+    const std::vector<torch::Tensor> weight_s      // float
+);
+
 std::vector<torch::Tensor> multigpu_gcn_inference(
     const long nnz, const int num_layers, const int num_hidden,
     const int num_classes,
@@ -118,10 +130,15 @@ std::vector<torch::Tensor> multigpu_gcn_inference(
       return multigpu_gcn_inference_unified_memory_cuda(
           nnz, num_layers, num_hidden, num_classes, row_ptr_s, col_idx_s,
           edge_val_s, p, q, in_feat, weight_s);
+    case 2:
+      return multigpu_gcn_inference_unified_memory_sparseOnGPU_cuda(
+          nnz, num_layers, num_hidden, num_classes, row_ptr_s, col_idx_s,
+          edge_val_s, p, q, in_feat, weight_s);
     default:
       throw std::runtime_error("unknown alg");
   }
 }
+
 PYBIND11_MODULE(multigpu_gcnconv, m) {
   m.doc() = "multi-gpu gcnconv kernel. ";
   m.def("multigpu_spmm", &multigpu_spmm, "multi-gpu spmm op");

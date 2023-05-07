@@ -6,9 +6,14 @@ import sys
 import dgl
 from dgl.data.reddit import RedditDataset
 import scipy.sparse as sp
+from ogb.nodeproppred import DglNodePropPredDataset
 
-data = RedditDataset()
-g = data[0]
+# data = RedditDataset()
+# data = DglNodePropPredDataset(name="ogbn-arxiv",root="/home/hz0567/.ogb")
+# data = DglNodePropPredDataset(name="ogbn-products",root="/home/hz0567/.ogb")
+data = DglNodePropPredDataset(name="ogbn-papers100M",root="/home/hz0567/.ogb")
+# exit()
+g, label = data[0]
 g = dgl.remove_self_loop(g)
 g = dgl.add_self_loop(g)
 m = g.num_nodes()
@@ -17,8 +22,8 @@ col, row = g.edges(order="srcdst")
 edge_val = torch.randn(col.shape, dtype=torch.float32)
 p = torch.tensor([0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64)
 q = torch.tensor([0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64)
-num_layers = 4
-num_hidden = 128
+num_layers = 2
+num_hidden = 64
 num_classes = data.num_classes
 in_feat = g.ndata["feat"]
 f = in_feat.shape[1]
@@ -94,7 +99,7 @@ out_feat_our,inference_time = multigpu_gcnconv.multigpu_gcn_inference(
     q,
     in_feat,
     weight_s,
-    1
+    2
 )
 torch.cuda.synchronize()
 end = time.time()
