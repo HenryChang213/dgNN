@@ -60,8 +60,6 @@ __global__ void spmm_kernel(const int f, const int* row_ptr, const int* col_idx,
   }
 }
 
-// relu kernel
-
 torch::Tensor multigpu_spmm_cuda(
     const long nnz,
     std::vector<torch::Tensor> row_ptr_s,   // int
