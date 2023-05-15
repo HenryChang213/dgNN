@@ -20,15 +20,15 @@ def load_dataset(args):
     elif args.dataset == "reddit":
         data = dgl.data.RedditDataset()
         g = data[0]
-        baseline_time = 1
+        baseline_time = 0.0227693 * 1000
     elif args.dataset == "ogbn-arxiv":
         data = DglNodePropPredDataset(name="ogbn-arxiv", root="/home/hz0567/.ogb")
         g, _ = data[0]
-        baseline_time = 1
+        baseline_time = 0.00427404 * 1000
     elif args.dataset == "ogbn-products":
         data = DglNodePropPredDataset(name="ogbn-products", root="/home/hz0567/.ogb")
         g, _ = data[0]
-        baseline_time = 1
+        baseline_time = 0.033549 * 1000
     elif args.dataset == "ogbn-papers100M":
         data = DglNodePropPredDataset(name="ogbn-papers100M", root="/home/hz0567/.ogb")
         g, _ = data[0]
@@ -49,23 +49,49 @@ def load_dataset(args):
     num_hidden = args.num_hidden
     num_classes = data.num_classes
 
-    adj_csr = sp.csr_matrix(
-        (torch.ones(row.shape), (row, col)), shape=(g.num_nodes(), g.num_nodes())
+    adj_coo = sp.coo_matrix(
+        (torch.ones(row.shape), (col, row)), shape=(g.num_nodes(), g.num_nodes())
     )
+    adj_csr = adj_coo.tocsr()
+    # adj_csr = sp.csr_matrix(
+    #     (torch.ones(row.shape), (row, col)), shape=(g.num_nodes(), g.num_nodes())
+    # )
 
     row_ptr = torch.from_numpy(adj_csr.indptr)
     col_idx = torch.from_numpy(adj_csr.indices)
-
+    # row_ptr_sorted,_= torch.sort(row_ptr)
+    # print(row_ptr)
+    # print(row_ptr_sorted)
+    # print(torch.all(row_ptr == row_ptr_sorted))
+    # p = torch.searchsorted(
+    #             row_ptr,
+    #             torch.tensor(
+    #                 [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
+    #                 dtype=torch.int64,
+    #             ),
+    #         )
+    # print(p)
+    # exit()
     adj_csc = adj_csr.tocsc()
 
     col_ptr = torch.from_numpy(adj_csc.indptr)
     row_idx = torch.from_numpy(adj_csc.indices)
+    # print(torch.sort(col_ptr)[-1])
+    # exit()
 
     # prepare weight
     weight_s = [torch.randn(f, num_hidden, dtype=torch.float32)]
+    flops: float = nnz * min(f, num_hidden) + m * f * num_hidden + m * num_hidden
     for i in range(1, num_layers - 1):
         weight_s.append(torch.randn(num_hidden, num_hidden, dtype=torch.float32))
+        flops += nnz * num_hidden + m * num_hidden * num_hidden + m * num_hidden
     weight_s.append(torch.randn(num_hidden, num_classes, dtype=torch.float32))
+    flops += (
+        nnz * min(num_hidden, num_classes)
+        + m * num_hidden * num_classes
+        + m * num_classes
+    )
+    print("{} flops: ".format(args.dataset), flops)
 
     return (
         m,
@@ -80,6 +106,7 @@ def load_dataset(args):
         col_idx,
         col_ptr,
         row_idx,
+        flops,
     )
 
 
@@ -129,6 +156,7 @@ def main(args):
         col_idx,
         col_ptr,
         row_idx,
+        flops,
     ) = load_dataset(args)
 
     numiter = 100
@@ -148,14 +176,14 @@ def main(args):
         p = torch.searchsorted(
             row_ptr,
             torch.tensor(
-                [0, int(nnz / 4), int(nnz / 2), int(nnz * 3 / 4), nnz],
+                [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
                 dtype=torch.int64,
             ),
         )
         q = torch.searchsorted(
             col_ptr,
             torch.tensor(
-                [0, int(nnz / 4), int(nnz / 2), int(nnz * 3 / 4), nnz],
+                [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
                 dtype=torch.int64,
             ),
         )
@@ -199,7 +227,7 @@ def main(args):
                     perturb[0][i] = perturb[0][i - 1]
                 if perturb[1][i] < perturb[1][i - 1]:
                     perturb[1][i] = perturb[1][i - 1]
-            for i in range(3, 1, -1):
+            for i in range(3, 0, -1):
                 if perturb[0][i] > perturb[0][i + 1]:
                     perturb[0][i] = perturb[0][i + 1]
                 if perturb[1][i] > perturb[1][i + 1]:
@@ -251,38 +279,74 @@ def main(args):
 
     elif args.partition_alg in ["equal", "binary_search"]:
         if args.partition_alg == "equal":
-            p = torch.tensor(
-                [0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64
-            )
-            q = torch.tensor(
-                [0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64
-            )
+            if args.num_gpu == 4:
+                p = torch.tensor(
+                    [0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64
+                )
+                q = torch.tensor(
+                    [0, int(m / 4), int(m / 2), int(m * 3 / 4), m], dtype=torch.int64
+                )
+            elif args.num_gpu == 2:
+                p = torch.tensor([0, int(m / 2), m], dtype=torch.int64)
+                q = torch.tensor([0, int(m / 2), m], dtype=torch.int64)
+            elif args.num_gpu == 1:
+                p = torch.tensor([0, m], dtype=torch.int64)
+                q = torch.tensor([0, m], dtype=torch.int64)
 
         elif args.partition_alg == "binary_search":
             nnz = row_ptr[-1]
+            if args.num_gpu == 4:
+                p = torch.searchsorted(
+                    row_ptr,
+                    torch.tensor(
+                        [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
+                        dtype=torch.int64,
+                    ),
+                )
+                q = torch.searchsorted(
+                    col_ptr,
+                    torch.tensor(
+                        [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
+                        dtype=torch.int64,
+                    ),
+                )
+            elif args.num_gpu == 2:
+                p = torch.searchsorted(
+                    row_ptr,
+                    torch.tensor(
+                        [0, int(nnz / 2), nnz],
+                        dtype=torch.int64,
+                    ),
+                )
+                q = torch.searchsorted(
+                    col_ptr,
+                    torch.tensor(
+                        [0, int(nnz / 2), nnz],
+                        dtype=torch.int64,
+                    ),
+                )
+            elif args.num_gpu == 1:
+                p = torch.tensor([0, m], dtype=torch.int64)
+                q = torch.tensor([0, m], dtype=torch.int64)
 
-            p = torch.searchsorted(
-                row_ptr,
-                torch.tensor(
-                    [0, int(nnz / 4), int(nnz / 2), int(nnz * 3 / 4), nnz],
-                    dtype=torch.int64,
-                ),
-            )
-            q = torch.searchsorted(
-                col_ptr,
-                torch.tensor(
-                    [0, int(nnz / 4), int(nnz / 2), int(nnz * 3 / 4), nnz],
-                    dtype=torch.int64,
-                ),
-            )
-
+        # print(nnz)
+        # print(torch.tensor(
+        #             [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
+        #             dtype=torch.int64,
+        #         ))
+        # torch.tensor(
+        #             [0, int(nnz / 4), int(nnz / 2), int(nnz / 4 * 3), nnz],
+        #             dtype=torch.int64,
+        #         )
+        # print(torch.all(row_ptr == torch.sort(row_ptr)))
+        # print(row_ptr == torch.sort(row_ptr))
         print(p)
         print(q)
-
-        for memory_manage in [0, 1, 2]:
-            row_ptr_s, col_idx_s, edge_val_s, p, q = partion_graph(
+        row_ptr_s, col_idx_s, edge_val_s, p, q = partion_graph(
                 args, row, col, edge_val, m, p, q
             )
+
+        if args.trace:
             out_feat_our, inference_time = multigpu_gcnconv.multigpu_gcn_inference(
                 nnz,
                 args.num_layers,
@@ -295,24 +359,44 @@ def main(args):
                 q,
                 in_feat,
                 weight_s,
-                memory_manage,
+                args.memory_manage,
             )
             torch.cuda.synchronize()
-            print(inference_time)
-
-            speedup = torch.mean(inference_time).item()/baseline_time
-            with open("{}".format(args.output), "a") as f:
-                f.write(
-                    "{},{},{},{},{},{},{}\n".format(
-                        args.num_layers,
-                        args.num_hidden,
-                        torch.cuda.device_count(),
-                        args.dataset,
-                        memory_manage,
-                        args.partition_alg,
-                        speedup,
-                    )
+        else:  
+            for memory_manage in [0, 1, 2]:
+                
+                out_feat_our, inference_time = multigpu_gcnconv.multigpu_gcn_inference(
+                    nnz,
+                    args.num_layers,
+                    args.num_hidden,
+                    num_classes,
+                    row_ptr_s,
+                    col_idx_s,
+                    edge_val_s,
+                    p,
+                    q,
+                    in_feat,
+                    weight_s,
+                    memory_manage,
                 )
+                torch.cuda.synchronize()
+                print(inference_time)
+
+                throughput = flops / 1e9 / torch.mean(inference_time).item()
+                speedup = torch.mean(inference_time).item()
+                with open("{}".format(args.output), "a") as f:
+                    f.write(
+                        "{},{},{},{},{},{},{},{}\n".format(
+                            args.num_layers,
+                            args.num_hidden,
+                            torch.cuda.device_count(),
+                            args.dataset,
+                            memory_manage,
+                            args.partition_alg,
+                            throughput,
+                            torch.mean(inference_time).item(),
+                        )
+                    )
 
     else:
         print("Unrecognized Partition Method: {}. Abort.".format(args.partition_alg))
@@ -320,12 +404,15 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GAT")
-    parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--num_hidden", type=int, default=64)
+    parser.add_argument("--num-layers", type=int, default=4)
+    parser.add_argument("--num-hidden", type=int, default=64)
     parser.add_argument("--dataset", type=str, default="reddit")
     parser.add_argument("--memory-manage", type=int, default=0)
     parser.add_argument("--partition-alg", type=str, default="sa")
     parser.add_argument("--output", type=str, default="output.txt")
+    parser.add_argument("--trace",type=int,default=1)
     args = parser.parse_args()
+    args.num_gpu = torch.cuda.device_count()
     print(args)
+    flops = 0
     main(args)

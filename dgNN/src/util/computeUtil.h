@@ -3,6 +3,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
+#include <cusparse.h>
 #include <nccl.h>
 
 #include "device_atomic_functions.h"
@@ -14,6 +15,13 @@
 #define MIN(a, b) ((a < b) ? a : b)
 #define MAX(a, b) ((a < b) ? b : a)
 
+void checkCusparseStatus(cusparseStatus_t status) {
+  if (status != CUSPARSE_STATUS_SUCCESS) {
+    std::cerr << "cuSPARSE error: " << status << std::endl;
+    exit(EXIT_FAILURE);
+  }
+}
+
 #define NCCLCHECK(cmd)                                              \
   do {                                                              \
     ncclResult_t res = cmd;                                         \
@@ -24,14 +32,15 @@
     }                                                               \
   } while (0)
 
-#define checkCudaError(a)                                                      \
-  do {                                                                         \
-    if (cudaSuccess != (a)) {                                                  \
-      fprintf(stderr, "Cuda runTime error in line %d of file %s \
-    : %s \n",                                                                  \
-              __LINE__, __FILE__, cudaGetErrorString(cudaGetLastError()));     \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
+#define checkCudaError(a)                                                  \
+  do {                                                                     \
+    if (cudaSuccess != (a)) {                                              \
+      fprintf(stderr,                                                      \
+              "Cuda runTime error in line %d of file %s \
+    : %s \n",                                                              \
+              __LINE__, __FILE__, cudaGetErrorString(cudaGetLastError())); \
+      exit(EXIT_FAILURE);                                                  \
+    }                                                                      \
   } while (0)
 
 #define checkCublasError(a)                                                \
@@ -45,14 +54,15 @@
     }                                                                      \
   } while (0)
 
-#define checkCuSparseError(a)                                                  \
-  do {                                                                         \
-    if (CUSPARSE_STATUS_SUCCESS != (a)) {                                      \
-      fprintf(stderr, "CuSparse runTime error in line %d of file %s \
-    : %s \n",                                                                  \
-              __LINE__, __FILE__, cudaGetErrorString(cudaGetLastError()));     \
-      exit(EXIT_FAILURE);                                                      \
-    }                                                                          \
+#define checkCuSparseError(a)                                              \
+  do {                                                                     \
+    if (CUSPARSE_STATUS_SUCCESS != (a)) {                                  \
+      fprintf(stderr,                                                      \
+              "CuSparse runTime error in line %d of file %s \
+    : %s \n",                                                              \
+              __LINE__, __FILE__, cudaGetErrorString(cudaGetLastError())); \
+      exit(EXIT_FAILURE);                                                  \
+    }                                                                      \
   } while (0)
 __device__ __forceinline__ float sum_reduce(float acc, float x) {
   return acc + x;
@@ -63,8 +73,7 @@ __device__ __forceinline__ float sum_init() { return 0; }
 __device__ __forceinline__ int findRow(const int *S_csrRowPtr, int eid,
                                        int start, int end) {
   int low = start, high = end;
-  if (low == high)
-    return low;
+  if (low == high) return low;
   while (low < high) {
     int mid = (low + high) >> 1;
     if (S_csrRowPtr[mid] <= eid)
@@ -182,4 +191,4 @@ __device__ __forceinline__ void AllReduce(data multi, int stride,
     multi += __shfl_xor_sync(0xffffffff, multi, stride, warpSize);
   }
 }
-#endif // computeUtil_H
+#endif  // computeUtil_H

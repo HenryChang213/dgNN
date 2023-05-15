@@ -10,3 +10,5 @@ dist/
 *.out
 *.nsys-rep
 myprofile*
+*.png
+*.pdf

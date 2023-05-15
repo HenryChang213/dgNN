@@ -26,7 +26,7 @@ setuptools.setup(
     packages=setuptools.find_packages(),
     python_requires=">=3.6",
     ext_modules=[
-        CUDAExtension('multigpu_gcnconv',['dgNN/src/multigpu_gcnconv/multigpu_gcnconv.cpp','dgNN/src/multigpu_gcnconv/multigpu_gcnconv_kernel.cu'],extra_cflags=["-lcublas"],extra_compile_args={'cxx':[], 'nvcc':['-arch=sm_80']}, extra_link_args=[],extra_include_paths=['/opt/nvidia/hpc_sdk/Linux_x86_64/22.5/comm_libs/nccl/include']),
+        CUDAExtension('multigpu_gcnconv',['dgNN/src/multigpu_gcnconv/multigpu_gcnconv.cpp','dgNN/src/multigpu_gcnconv/multigpu_gcnconv_kernel.cu'],extra_cflags=["-lcublas","-lcusparse"],extra_compile_args={'cxx':[], 'nvcc':['-arch=sm_80']}, extra_link_args=[],extra_include_paths=['/opt/nvidia/hpc_sdk/Linux_x86_64/22.5/comm_libs/nccl/include']),
         CUDAExtension('fused_gatconv', ['dgNN/src/fused_gatconv/fused_gatconv.cpp', 'dgNN/src/fused_gatconv/fused_gatconv_kernel.cu'], extra_compile_args={'cxx':[], 'nvcc':['-arch=sm_80']}, extra_link_args=['-lcurand']),
         CUDAExtension('fused_edgeconv',['dgNN/src/fused_edgeconv/fused_edgeconv.cpp','dgNN/src/fused_edgeconv/fused_edgeconv_kernel.cu'], extra_compile_args={'cxx':[], 'nvcc':['-arch=sm_80']}, extra_link_args=['-lcurand']),
         CUDAExtension('fused_gmmconv',['dgNN/src/fused_gmmconv/fused_gmmconv.cpp','dgNN/src/fused_gmmconv/fused_gmmconv_kernel.cu'], extra_compile_args={'cxx':[], 'nvcc':['-arch=sm_80']}, extra_link_args=['-lcurand']),
